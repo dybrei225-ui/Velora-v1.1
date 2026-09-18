@@ -14,6 +14,7 @@ import {
   FileVideo
 } from 'lucide-react';
 import { Project } from '../../types.js';
+import { resolveStreamPlaybackUrl } from '../../utils/streamResolver.js';
 
 interface HomeViewProps {
   onProjectLoaded: (project: Project) => void;
@@ -52,10 +53,9 @@ export const HomeView: React.FC<HomeViewProps> = ({ onProjectLoaded }) => {
 
       const data = await response.json();
 
-      // If stream is HLS and might need CORS proxy (avoid double proxying)
-      const streamUrl = data.streamUrl.includes('.m3u8') && !data.streamUrl.startsWith('/api/kick/proxy')
-        ? `/api/kick/proxy?url=${encodeURIComponent(data.streamUrl)}`
-        : data.streamUrl;
+      // Conditionally route via proxy only when necessary (e.g., restricted Kick CDNs),
+      // while loading confirmed open-CORS streams (like test-streams.mux.dev) directly
+      const streamUrl = await resolveStreamPlaybackUrl(data.streamUrl);
 
       const project: Project = {
         id: `proj-${Date.now()}`,
@@ -300,7 +300,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onProjectLoaded }) => {
                     value={kickUrl}
                     onChange={(e) => setKickUrl(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleResolveKickUrl()}
-                    placeholder="https://kick.com/video/... o .m3u8"
+                    placeholder="https://kick.com/canal/videos/uuid o .m3u8"
                     className="w-full bg-[#13151f] border border-[#232737] rounded-lg px-3.5 py-2.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-[#53FC18] transition-colors"
                   />
                 </div>
@@ -316,10 +316,10 @@ export const HomeView: React.FC<HomeViewProps> = ({ onProjectLoaded }) => {
                     </button>
                     <span>•</span>
                     <button
-                      onClick={() => setKickUrl('https://kick.com/video/51d6c050-8b1b-4171-87a3-cb200faad778')}
+                      onClick={() => setKickUrl('https://kick.com/edwinmendozza/videos/01a0b3df-02a0-7fea-b49c-877c336673e0')}
                       className="text-gray-300 hover:text-white hover:underline"
                     >
-                      Enlace Kick
+                      VOD de Kick
                     </button>
                   </div>
                 </div>

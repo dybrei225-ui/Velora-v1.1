@@ -76,10 +76,41 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         enableWorker: true,
         lowLatencyMode: false,
         backBufferLength: 90,
+        // Reasonable timeouts between 20 and 30 seconds to prevent premature aborts
+        manifestLoadingTimeOut: 25000,
+        manifestLoadingMaxRetry: 3,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingTimeOut: 25000,
+        levelLoadingMaxRetry: 4,
+        levelLoadingRetryDelay: 1000,
+        fragLoadingTimeOut: 25000,
+        fragLoadingMaxRetry: 5,
+        fragLoadingRetryDelay: 1000,
+        // Do NOT enable withCredentials blindly: cross-origin servers using Access-Control-Allow-Origin: *
+        // will cause browser CORS rejection if withCredentials is true.
+        xhrSetup: (xhr: XMLHttpRequest, _url: string) => {
+          xhr.withCredentials = false;
+        },
       });
+
+      console.log('[HLS] URL de carga:', sourceUrl);
 
       hls.loadSource(sourceUrl);
       hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_LOADING, (_event, data) => {
+        console.log('[HLS] MANIFEST_LOADING:', data.url || sourceUrl);
+      });
+
+      hls.on(Hls.Events.MANIFEST_LOADED, (_event, data) => {
+        console.log('[HLS] MANIFEST_LOADED:', {
+          url: data.url,
+          levels: data.levels?.length,
+        });
+        setHlsError(null);
+        networkRetryCount = 0;
+        mediaRetryCount = 0;
+      });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setHlsError(null);
@@ -87,17 +118,44 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         mediaRetryCount = 0;
       });
 
+      hls.on(Hls.Events.LEVEL_LOADING, (_event, data) => {
+        console.log('[HLS] LEVEL_LOADING:', {
+          level: data.level,
+          url: data.url,
+        });
+      });
+
+      hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+        console.log('[HLS] LEVEL_LOADED:', {
+          level: data.level,
+          targetduration: data.details?.targetduration,
+          fragments: data.details?.fragments?.length,
+        });
+      });
+
       hls.on(Hls.Events.FRAG_LOADED, () => {
         networkRetryCount = 0;
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        console.error('[HLS] ERROR:', {
+          type: data.type,
+          details: data.details,
+          fatal: data.fatal,
+          url: data.url || (data.context && (data.context as any).url),
+          response: data.response ? {
+            code: data.response.code,
+            text: data.response.text?.slice(0, 150),
+            url: data.response.url,
+          } : undefined,
+        });
+
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
               if (networkRetryCount < MAX_NETWORK_RETRIES) {
                 networkRetryCount++;
-                console.warn(`HLS Network Notice, reintento ${networkRetryCount}/${MAX_NETWORK_RETRIES}... (${data.details})`);
+                console.warn(`[HLS] Network error retry ${networkRetryCount}/${MAX_NETWORK_RETRIES}... (${data.details})`);
                 if (retryTimeout) clearTimeout(retryTimeout);
                 retryTimeout = setTimeout(() => {
                   if (data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
@@ -109,7 +167,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   }
                 }, 1000 * networkRetryCount);
               } else {
-                console.warn('HLS Network Notice: se alcanzó el límite de reintentos para este stream.');
+                console.warn('[HLS] Reached network retry limit.');
                 setHlsError('No se pudo conectar con el servidor de la transmisión HLS. Verifica el enlace o intenta con otro stream.');
                 hls.destroy();
                 hlsRef.current = null;
@@ -119,10 +177,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             case Hls.ErrorTypes.MEDIA_ERROR:
               if (mediaRetryCount < MAX_MEDIA_RETRIES) {
                 mediaRetryCount++;
-                console.warn(`HLS Media Notice, recuperando códec/medio (${mediaRetryCount}/${MAX_MEDIA_RETRIES})...`);
+                console.warn(`[HLS] Media error recovery attempt (${mediaRetryCount}/${MAX_MEDIA_RETRIES})...`);
                 hls.recoverMediaError();
               } else {
-                console.warn('HLS Media Notice: fallo no recuperable en el medio.');
+                console.warn('[HLS] Unrecoverable media error.');
                 setHlsError('Error al decodificar el formato multimedia del stream.');
                 hls.destroy();
                 hlsRef.current = null;
@@ -130,7 +188,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               break;
 
             default:
-              console.warn('HLS Fatal Notice:', data.details);
+              console.warn('[HLS] Fatal error:', data.details);
               setHlsError('No se pudo reproducir el stream HLS.');
               hls.destroy();
               hlsRef.current = null;

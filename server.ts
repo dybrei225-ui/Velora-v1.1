@@ -144,12 +144,12 @@ app.get('/api/kick/proxy', async (req, res) => {
 
   const targetUrl = req.query.url as string;
   if (!targetUrl) {
-    return res.status(400).json({ error: 'Falta el parámetro url' });
+    return res.status(400).type('text/plain').send('HLS Proxy Error (400): Falta el parámetro url');
   }
 
   // Security: prevent file system / localhost traversal
   if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-    return res.status(403).json({ error: 'Protocolo no permitido' });
+    return res.status(403).type('text/plain').send('HLS Proxy Error (403): Protocolo no permitido');
   }
 
   try {
@@ -177,14 +177,16 @@ app.get('/api/kick/proxy', async (req, res) => {
     }
   } catch (err: any) {
     console.warn('HLS proxy notice:', err.message);
-    res.status(502).json({ error: `Error de proxy: ${err.message}` });
+    const statusCode = err.statusCode || (err.name === 'AbortError' || err.message?.includes('Timeout') ? 504 : 502);
+    // Return clean plain text error instead of JSON or HTML so HLS parser doesn't choke on syntax
+    res.status(statusCode).type('text/plain').send(`HLS Proxy Error (${statusCode}): ${err.message}`);
   }
 });
 
 /**
  * Local video file upload
  */
-app.post('/api/upload', upload.single('video'), async (req, res) => {
+app.post('/api/upload', upload.single('video') as any, async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No se recibió ningún archivo de video.' });
   }
@@ -426,7 +428,7 @@ async function start() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (_req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
