@@ -52,8 +52,8 @@ export const HomeView: React.FC<HomeViewProps> = ({ onProjectLoaded }) => {
 
       const data = await response.json();
 
-      // If stream is HLS and might need CORS proxy
-      const streamUrl = data.streamUrl.includes('.m3u8')
+      // If stream is HLS and might need CORS proxy (avoid double proxying)
+      const streamUrl = data.streamUrl.includes('.m3u8') && !data.streamUrl.startsWith('/api/kick/proxy')
         ? `/api/kick/proxy?url=${encodeURIComponent(data.streamUrl)}`
         : data.streamUrl;
 
@@ -195,26 +195,26 @@ export const HomeView: React.FC<HomeViewProps> = ({ onProjectLoaded }) => {
     }
   };
 
-  // 3. Load Demo VOD (Big Buck Bunny high-compatibility MP4 from Google Storage)
+  // 3. Load Demo VOD (High-compatibility MP4 with CORS support)
   const handleLoadDemoVod = () => {
     setIsResolvingKick(true);
     setErrorMessage(null);
 
     setTimeout(() => {
-      const demoDuration = 596; // ~10 minutes
+      const demoDuration = 183; // 3m 03s
       const project: Project = {
         id: `proj-demo-${Date.now()}`,
         name: 'Kick Stream VOD (Demostración Oficial)',
         sourceType: 'demo',
-        sourceUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+        sourceUrl: 'https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4',
         originalUrl: 'https://kick.com/video/demo-broadcast-sample',
         isHls: false,
         metadata: {
           duration: demoDuration,
-          width: 1920,
-          height: 1080,
+          width: 1280,
+          height: 720,
           fps: 60,
-          title: 'Transmisión Especial de Prueba - 1080p 60fps',
+          title: 'Transmisión de Prueba HD - 720p 60fps',
           channel: 'KickPartner_Demo',
           thumbnailUrl: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=600&auto=format&fit=crop&q=80',
         },
@@ -307,12 +307,21 @@ export const HomeView: React.FC<HomeViewProps> = ({ onProjectLoaded }) => {
 
                 <div className="flex items-center justify-between text-[11px] text-gray-400">
                   <span>Ejemplos compatibles:</span>
-                  <button
-                    onClick={() => setKickUrl('https://kick.com/video/51d6c050-8b1b-4171-87a3-cb200faad778')}
-                    className="text-[#53FC18] hover:underline"
-                  >
-                    Usar URL de muestra
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => setKickUrl('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8')}
+                      className="text-[#53FC18] hover:underline"
+                    >
+                      Stream HLS (.m3u8)
+                    </button>
+                    <span>•</span>
+                    <button
+                      onClick={() => setKickUrl('https://kick.com/video/51d6c050-8b1b-4171-87a3-cb200faad778')}
+                      className="text-gray-300 hover:text-white hover:underline"
+                    >
+                      Enlace Kick
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

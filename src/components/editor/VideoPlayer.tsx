@@ -48,6 +48,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [videoDuration, setVideoDuration] = useState(0);
   const [hlsError, setHlsError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Initialize HLS or direct video source
   useEffect(() => {
@@ -64,6 +65,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const isHlsStream = isHls || sourceUrl.includes('.m3u8');
 
+    let networkRetryCount = 0;
+    let mediaRetryCount = 0;
+    const MAX_NETWORK_RETRIES = 3;
+    const MAX_MEDIA_RETRIES = 2;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
     if (isHlsStream && Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
@@ -76,22 +83,57 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setHlsError(null);
+        networkRetryCount = 0;
+        mediaRetryCount = 0;
+      });
+
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        networkRetryCount = 0;
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.warn('HLS Network Error, attempting recovery...');
-              hls.startLoad();
+              if (networkRetryCount < MAX_NETWORK_RETRIES) {
+                networkRetryCount++;
+                console.warn(`HLS Network Notice, reintento ${networkRetryCount}/${MAX_NETWORK_RETRIES}... (${data.details})`);
+                if (retryTimeout) clearTimeout(retryTimeout);
+                retryTimeout = setTimeout(() => {
+                  if (data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
+                      data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+                      data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR) {
+                    hls.loadSource(sourceUrl);
+                  } else {
+                    hls.startLoad();
+                  }
+                }, 1000 * networkRetryCount);
+              } else {
+                console.warn('HLS Network Notice: se alcanzó el límite de reintentos para este stream.');
+                setHlsError('No se pudo conectar con el servidor de la transmisión HLS. Verifica el enlace o intenta con otro stream.');
+                hls.destroy();
+                hlsRef.current = null;
+              }
               break;
+
             case Hls.ErrorTypes.MEDIA_ERROR:
-              console.warn('HLS Media Error, recovering media...');
-              hls.recoverMediaError();
+              if (mediaRetryCount < MAX_MEDIA_RETRIES) {
+                mediaRetryCount++;
+                console.warn(`HLS Media Notice, recuperando códec/medio (${mediaRetryCount}/${MAX_MEDIA_RETRIES})...`);
+                hls.recoverMediaError();
+              } else {
+                console.warn('HLS Media Notice: fallo no recuperable en el medio.');
+                setHlsError('Error al decodificar el formato multimedia del stream.');
+                hls.destroy();
+                hlsRef.current = null;
+              }
               break;
+
             default:
-              setHlsError('No se pudo decodificar el stream HLS de Kick.');
+              console.warn('HLS Fatal Notice:', data.details);
+              setHlsError('No se pudo reproducir el stream HLS.');
               hls.destroy();
+              hlsRef.current = null;
               break;
           }
         }
@@ -104,12 +146,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
 
     return () => {
+      if (retryTimeout) clearTimeout(retryTimeout);
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
     };
-  }, [sourceUrl, isHls]);
+  }, [sourceUrl, isHls, reloadKey]);
 
   // Sync external seek (from timeline click)
   useEffect(() => {
@@ -275,10 +318,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* HLS Error Overlay */}
         {hlsError && (
-          <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-6 text-center z-10">
+          <div 
+            className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center p-6 text-center z-20 cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
             <AlertCircle className="w-10 h-10 text-amber-400 mb-2" />
             <div className="text-white font-semibold text-base mb-1">Aviso de Reproducción</div>
-            <div className="text-gray-300 text-xs max-w-md mb-4">{hlsError}</div>
+            <div className="text-gray-300 text-xs max-w-md mb-4 leading-relaxed">{hlsError}</div>
+            <button
+              onClick={() => {
+                setHlsError(null);
+                setReloadKey((prev) => prev + 1);
+              }}
+              className="px-4 py-2 bg-[#53FC18] hover:bg-[#42d911] text-black font-bold text-xs rounded-lg transition-colors shadow-lg active:scale-95"
+            >
+              Reintentar Conexión
+            </button>
           </div>
         )}
 

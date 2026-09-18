@@ -143,48 +143,95 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 /**
  * Proxies an HLS or video segment request, adding CORS headers and rewriting manifest URLs if needed.
  */
-export async function proxyHlsRequest(targetUrl: string, baseUrlForRewrites: string): Promise<{
+export async function proxyHlsRequest(
+  targetUrl: string,
+  baseUrlForRewrites: string,
+  clientHeaders?: Record<string, string | string[] | undefined>
+): Promise<{
+  statusCode: number;
   contentType: string;
+  headers: Record<string, string>;
   data: Buffer | string;
   isManifest: boolean;
 }> {
   const parsedUrl = new URL(targetUrl);
+  const isKickDomain = parsedUrl.host.includes('kick.com') || parsedUrl.host.includes('cloudfront.net');
+
+  const forwardHeaders: Record<string, string> = {
+    'User-Agent': BROWSER_UA,
+    'Accept': '*/*',
+  };
+
+  if (isKickDomain) {
+    forwardHeaders['Referer'] = 'https://kick.com/';
+    forwardHeaders['Origin'] = 'https://kick.com';
+  }
+
+  // Forward client Range request if available
+  if (clientHeaders && clientHeaders['range']) {
+    forwardHeaders['Range'] = String(clientHeaders['range']);
+  }
+
   const response = await fetch(targetUrl, {
-    headers: {
-      'User-Agent': BROWSER_UA,
-      'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
-      'Origin': `${parsedUrl.protocol}//${parsedUrl.host}`,
-    },
+    headers: forwardHeaders,
   });
 
-  if (!response.ok) {
+  if (!response.ok && response.status !== 206) {
     throw new Error(`Proxy target returned HTTP ${response.status}: ${response.statusText}`);
   }
 
-  const contentType = response.headers.get('content-type') || 'application/octet-stream';
-  const isManifest = targetUrl.includes('.m3u8') || contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL');
+  const responseHeaders: Record<string, string> = {};
+  const contentRange = response.headers.get('content-range');
+  if (contentRange) {
+    responseHeaders['Content-Range'] = contentRange;
+  }
+  const acceptRanges = response.headers.get('accept-ranges');
+  if (acceptRanges) {
+    responseHeaders['Accept-Ranges'] = acceptRanges;
+  }
+
+  let contentType = response.headers.get('content-type') || '';
+  const pathname = parsedUrl.pathname.toLowerCase();
+
+  const isManifest = pathname.endsWith('.m3u8') ||
+    contentType.includes('mpegurl') ||
+    contentType.includes('application/x-mpegurl');
 
   if (isManifest) {
     const text = await response.text();
     // Rewrite internal URLs so secondary playlists and .ts segments pass through /api/kick/proxy
     const rewritten = rewriteM3u8Manifest(text, targetUrl, baseUrlForRewrites);
     return {
-      contentType: 'application/vnd.apple.mpegurl',
+      statusCode: response.status,
+      contentType: 'application/vnd.apple.mpegurl; charset=utf-8',
+      headers: responseHeaders,
       data: rewritten,
       isManifest: true,
     };
   }
 
+  // Set standard MIME types for video segments to avoid MSE decoder issues
+  if (pathname.endsWith('.ts')) {
+    contentType = 'video/mp2t';
+  } else if (pathname.endsWith('.mp4') || pathname.endsWith('.m4s')) {
+    contentType = 'video/mp4';
+  } else if (!contentType) {
+    contentType = 'application/octet-stream';
+  }
+
   const arrayBuf = await response.arrayBuffer();
   return {
+    statusCode: response.status,
     contentType,
+    headers: responseHeaders,
     data: Buffer.from(arrayBuf),
     isManifest: false,
   };
 }
 
 function rewriteM3u8Manifest(manifest: string, manifestUrl: string, proxyEndpoint: string): string {
-  const lines = manifest.split('\n');
+  // Normalize Windows CRLF line endings to prevent carriage return corruption
+  const lines = manifest.replace(/\r/g, '').split('\n');
   const manifestBase = manifestUrl.substring(0, manifestUrl.lastIndexOf('/') + 1);
 
   return lines.map(line => {
@@ -197,7 +244,7 @@ function rewriteM3u8Manifest(manifest: string, manifestUrl: string, proxyEndpoin
           return `URI="${proxyEndpoint}?url=${encodeURIComponent(absolute)}"`;
         });
       }
-      return line;
+      return trimmed;
     }
 
     // It's a segment or sub-playlist URL

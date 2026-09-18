@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
+import http from 'http';
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
@@ -16,6 +17,7 @@ import {
 
 const PORT = 3000;
 const app = express();
+app.set('trust proxy', true);
 
 // Temporary directory for uploaded video files
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads_temp');
@@ -125,25 +127,48 @@ app.post('/api/kick/resolve', rateLimiter(60, 60 * 1000), async (req, res) => {
 /**
  * Proxy HLS playlist and video segments to bypass CORS restrictions
  */
+app.options('/api/kick/proxy', (_req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+  res.sendStatus(204);
+});
+
 app.get('/api/kick/proxy', async (req, res) => {
+  // Always attach CORS headers so browsers never block error responses or segments
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+
   const targetUrl = req.query.url as string;
   if (!targetUrl) {
-    return res.status(400).send('Falta el parámetro url');
+    return res.status(400).json({ error: 'Falta el parámetro url' });
   }
 
   // Security: prevent file system / localhost traversal
   if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-    return res.status(403).send('Protocolo no permitido');
+    return res.status(403).json({ error: 'Protocolo no permitido' });
   }
 
   try {
-    const proxyBase = `${req.protocol}://${req.get('host')}/api/kick/proxy`;
-    const { contentType, data } = await proxyHlsRequest(targetUrl, proxyBase);
+    // Use relative path so HLS manifests work seamlessly in browser regardless of host/protocol/proxy
+    const proxyBase = '/api/kick/proxy';
+    const { statusCode, contentType, headers: customHeaders, data } = await proxyHlsRequest(targetUrl, proxyBase, req.headers);
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=3600');
+
+    if (customHeaders) {
+      for (const [key, val] of Object.entries(customHeaders)) {
+        res.setHeader(key, val);
+      }
+    }
+
+    if (statusCode) {
+      res.status(statusCode);
+    }
 
     if (typeof data === 'string') {
       res.send(data);
@@ -151,8 +176,8 @@ app.get('/api/kick/proxy', async (req, res) => {
       res.end(data);
     }
   } catch (err: any) {
-    console.error('Error in HLS proxy:', err.message);
-    res.status(502).send(`Error de proxy: ${err.message}`);
+    console.warn('HLS proxy notice:', err.message);
+    res.status(502).json({ error: `Error de proxy: ${err.message}` });
   }
 });
 
@@ -250,9 +275,17 @@ app.post('/api/export/start', rateLimiter(10, 60 * 1000), async (req, res) => {
   try {
     const { projectId, sourceUrl, filePath, segments, mode, totalVodDuration } = req.body;
 
-    const source = filePath || sourceUrl;
+    let source = filePath || sourceUrl;
     if (!source) {
       return res.status(400).json({ error: 'Falta la fuente del video para exportar.' });
+    }
+
+    // If source is passing through /api/kick/proxy, extract underlying stream URL for FFmpeg
+    if (typeof source === 'string' && source.includes('/api/kick/proxy?url=')) {
+      const parts = source.split('/api/kick/proxy?url=');
+      if (parts[1]) {
+        source = decodeURIComponent(parts[1]);
+      }
     }
 
     if (!Array.isArray(segments) || segments.length === 0) {
@@ -374,21 +407,31 @@ function probeVideoFile(filePath: string): Promise<any> {
 // ----------------------------------------------------
 
 async function start() {
+  const server = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: {
+          server: server,
+        },
+        hmr: {
+          server: server,
+        },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get('*all', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`VELORA Server running on http://0.0.0.0:${PORT}`);
   });
 }
