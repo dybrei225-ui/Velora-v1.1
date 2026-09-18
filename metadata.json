@@ -1,0 +1,6 @@
+{
+  "name": "VELORA",
+  "description": "Plataforma de edición no lineal, curación y exportación de transmisiones y VODs de Kick con IA y FFmpeg.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
